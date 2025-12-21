@@ -1,0 +1,41 @@
+{
+  "name": "cql-local-tester",
+  "version": "1.0.0",
+  "description": "CLI tool for testing CQL locally with QI-Core 6.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "cql": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "run:cql": "tsx src/index.ts run",
+    "patients": "tsx src/index.ts patients list",
+    "valuesets": "tsx src/index.ts valuesets list"
+  },
+  "keywords": [
+    "cql",
+    "fhir",
+    "qicore",
+    "clinical-quality-language",
+    "healthcare"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cql-execution": "^3.0.1",
+    "cql-exec-fhir": "^2.1.6",
+    "commander": "^12.1.0",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "tsx": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

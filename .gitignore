@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Output directories
+elm-output/
+bundles-output/
+results/
+valuesets/
+
+# MADiE packages and test cases
+*-FHIR/
+*-TestCases/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
