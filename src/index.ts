@@ -30,15 +30,441 @@ import {
   loadTestCases,
   getPatientIdFromBundle,
   TestCase,
+  PopulationCounts,
+  ExpectedGroup,
+  ObservationValues,
 } from './madie/test-bundle-processor.js';
 import {
   loadValueSetsForMadie,
   getValueSetSummary,
 } from './madie/valueset-loader.js';
 import { PatientSource } from 'cql-exec-fhir';
-import { Library, Executor } from 'cql-execution';
+import { Library, Executor, DateTime, Interval } from 'cql-execution';
 
 const program = new Command();
+
+/**
+ * Human-readable group names for CMS986 measure
+ */
+const GROUP_NAMES: Record<string, string> = {
+  'Group_1': 'Malnutrition Risk Screening or Dietitian Referral',
+  'Group_2': 'Nutrition Assessment with Identified Status',
+  'Group_3': 'Malnutrition Diagnosis',
+  'Group_4': 'Nutrition Care Plan',
+  'Group_5': 'Total Malnutrition Components Score',
+  'Group_6': 'Total Malnutrition Care Score as Percentage'
+};
+
+/**
+ * Human-readable observation names
+ */
+const OBSERVATION_NAMES: Record<string, string> = {
+  'obs1': 'Malnutrition Risk Screening or Dietitian Referral',
+  'obs2': 'Nutrition Assessment with Identified Status',
+  'obs3': 'Malnutrition Diagnosis',
+  'obs4': 'Nutrition Care Plan'
+};
+
+/**
+ * Actual group results calculated from CQL execution
+ */
+interface ActualGroup {
+  groupId: string;
+  populations: PopulationCounts;
+  measureScore: number;
+}
+
+/**
+ * Group comparison result
+ */
+interface GroupComparison {
+  groupId: string;
+  expected: PopulationCounts;
+  actual: PopulationCounts;
+  expectedScore: number;
+  actualScore: number;
+  passed: boolean;
+}
+
+/**
+ * Helper to get encounter IDs from expression result
+ * Handles both string IDs and {value: 'id'} objects
+ */
+function getEncounterIds(val: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (Array.isArray(val)) {
+    for (const item of val) {
+      if (item && typeof item === 'object') {
+        const enc = item as Record<string, unknown>;
+        if (enc.id) {
+          // Handle both string IDs and {value: 'id'} objects
+          if (typeof enc.id === 'string') {
+            ids.add(enc.id);
+          } else if (typeof enc.id === 'object' && enc.id !== null) {
+            const idObj = enc.id as Record<string, unknown>;
+            if (idObj.value) {
+              ids.add(String(idObj.value));
+            }
+          }
+        }
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * Get encounter ID from an encounter object
+ */
+function getEncounterId(enc: Record<string, unknown>): string {
+  if (enc.id) {
+    if (typeof enc.id === 'string') {
+      return enc.id;
+    } else if (typeof enc.id === 'object' && enc.id !== null) {
+      const idObj = enc.id as Record<string, unknown>;
+      if (idObj.value) {
+        return String(idObj.value);
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Get encounter period start date for sorting
+ */
+function getEncounterStart(enc: Record<string, unknown>): string {
+  const period = enc.period as Record<string, unknown> | undefined;
+  if (period?.start) {
+    if (typeof period.start === 'string') {
+      return period.start;
+    } else if (typeof period.start === 'object' && period.start !== null) {
+      const startObj = period.start as Record<string, unknown>;
+      if (startObj.value) {
+        return String(startObj.value);
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Get sorted encounter IDs from expression result
+ * Sorts by encounter period start date (ascending)
+ */
+function getSortedEncounterIds(val: unknown): string[] {
+  if (!Array.isArray(val)) return [];
+
+  const encounters: Array<{ id: string; start: string }> = [];
+  for (const item of val) {
+    if (item && typeof item === 'object') {
+      const enc = item as Record<string, unknown>;
+      const id = getEncounterId(enc);
+      const start = getEncounterStart(enc);
+      if (id) {
+        encounters.push({ id, start });
+      }
+    }
+  }
+
+  // Keep encounters in original order (no sorting)
+  // Comparison will sort both expected and actual values
+
+  return encounters.map(e => e.id);
+}
+
+/**
+ * Calculate observation values from expression results
+ * Observations are calculated PER ENCOUNTER and summed
+ */
+function calculateObservations(expressions: Record<string, unknown>): {
+  obs1: number;
+  obs2: number;
+  obs3: number;
+  obs4: number;
+} {
+  // Get encounter ID sets for each relevant expression
+  const measurePop = getEncounterIds(expressions['Measure Population']);
+  const screeningOrReferral = getEncounterIds(expressions['Encounters with Malnutrition Risk Screening or with Dietitian Referral']);
+  const atRiskOrReferral = getEncounterIds(expressions['Encounters with Malnutrition Risk Screening At Risk or with Dietitian Referral']);
+  const notAtRiskWithoutReferral = getEncounterIds(expressions['Encounters with Malnutrition Not At Risk Screening and without Dietitian Referral']);
+  const assessmentWithStatus = getEncounterIds(expressions['Encounter With Most Recent Nutrition Assessment And Identified Status']);
+  const modSevereAssessment = getEncounterIds(expressions['Encounter With Most Recent Nutrition Assessment Status of Moderately Or Severely Malnourished']);
+  const notMildAssessment = getEncounterIds(expressions['Encounter With Most Recent Nutrition Assessment Status of Not or Mildly Malnourished']);
+  const diagnosis = getEncounterIds(expressions['Encounters with Malnutrition Diagnosis']);
+  const carePlan = getEncounterIds(expressions['Encounters with Nutrition Care Plan']);
+
+  let obs1 = 0, obs2 = 0, obs3 = 0, obs4 = 0;
+
+  // For each encounter in measure population, calculate observations
+  for (const encId of measurePop) {
+    // Obs 1: Screening or Referral for THIS encounter
+    if (screeningOrReferral.has(encId)) {
+      obs1 += 1;
+    }
+
+    // Obs 2: Assessment with Status for THIS encounter
+    if (notAtRiskWithoutReferral.has(encId)) {
+      // Not at risk without referral = 0
+    } else if (atRiskOrReferral.has(encId) && assessmentWithStatus.has(encId)) {
+      obs2 += 1;
+    }
+
+    // Obs 3: Diagnosis for THIS encounter (only if moderate/severe)
+    if (notAtRiskWithoutReferral.has(encId)) {
+      // Not at risk without referral = 0
+    } else if (atRiskOrReferral.has(encId) &&
+               modSevereAssessment.has(encId) &&
+               diagnosis.has(encId)) {
+      obs3 += 1;
+    }
+
+    // Obs 4: Care Plan for THIS encounter (only if moderate/severe)
+    if (notAtRiskWithoutReferral.has(encId)) {
+      // Not at risk without referral = 0
+    } else if (atRiskOrReferral.has(encId) &&
+               modSevereAssessment.has(encId) &&
+               carePlan.has(encId)) {
+      obs4 += 1;
+    }
+  }
+
+  return { obs1, obs2, obs3, obs4 };
+}
+
+/**
+ * Calculate actual group results from CQL expression results
+ * CMS986 has 6 groups but they all share the same IP/MP/MPE
+ * Groups 1-4 have different observation calculations, Groups 5-6 are aggregates
+ */
+function calculateActualGroups(expressions: Record<string, unknown>): ActualGroup[] {
+  // Get core population counts
+  const ipResult = expressions['Initial Population'];
+  const mpResult = expressions['Measure Population'];
+  const mpeResult = expressions['Measure Population Exclusion'];
+
+  const ipCount = Array.isArray(ipResult) ? ipResult.length : 0;
+  const mpCount = Array.isArray(mpResult) ? mpResult.length : 0;
+  const mpeCount = Array.isArray(mpeResult) ? mpeResult.length : 0;
+
+  const { obs1, obs2, obs3, obs4 } = calculateObservations(expressions);
+
+  // Create 6 groups matching the MeasureReport structure
+  const groups: ActualGroup[] = [];
+
+  // Groups 1-4: Each has the same IP/MP/MPE but different observation values
+  // Each group's obs1 holds that group's specific observation count
+  const obsValues = [obs1, obs2, obs3, obs4];
+  for (let i = 1; i <= 4; i++) {
+    groups.push({
+      groupId: `Group_${i}`,
+      populations: {
+        initialPopulation: ipCount,
+        measurePopulation: mpCount,
+        measurePopulationExclusion: mpeCount,
+        observations: { obs1: obsValues[i - 1], obs2: 0, obs3: 0, obs4: 0 }
+      },
+      measureScore: mpCount > 0 ? obsValues[i - 1] / mpCount : 0
+    });
+  }
+
+  // Groups 5-6: Per-encounter calculations then summed
+  // Get all expression sets needed for per-encounter obs calculation
+  const measurePop = getEncounterIds(expressions['Measure Population']);
+  // Get SORTED encounter IDs based on encounter period start date
+  const sortedEncounterIds = getSortedEncounterIds(expressions['Measure Population']);
+  const screeningOrReferral = getEncounterIds(expressions['Encounters with Malnutrition Risk Screening or with Dietitian Referral']);
+  const notAtRiskWithoutReferral = getEncounterIds(expressions['Encounters with Malnutrition Not At Risk Screening and without Dietitian Referral']);
+  const notMildAssessment = getEncounterIds(expressions['Encounter With Most Recent Nutrition Assessment Status of Not or Mildly Malnourished']);
+  const assessmentWithStatus = getEncounterIds(expressions['Encounter With Most Recent Nutrition Assessment And Identified Status']);
+  const atRiskOrReferral = getEncounterIds(expressions['Encounters with Malnutrition Risk Screening At Risk or with Dietitian Referral']);
+  const modSevereAssessment = getEncounterIds(expressions['Encounter With Most Recent Nutrition Assessment Status of Moderately Or Severely Malnourished']);
+  const diagnosis = getEncounterIds(expressions['Encounters with Malnutrition Diagnosis']);
+  const carePlan = getEncounterIds(expressions['Encounters with Nutrition Care Plan']);
+
+  let totalComponentsScore = 0;  // Group 5: sum of per-encounter scores
+  let totalPercentageSum = 0;    // Group 6: sum of per-encounter percentages
+
+  // Calculate per-encounter values and sum them (using sorted order)
+  for (const encId of sortedEncounterIds) {
+    // Calculate this encounter's obs1-4 values (0 or 1 each)
+    let encObs1 = 0, encObs2 = 0, encObs3 = 0, encObs4 = 0;
+
+    // Obs 1: Screening or Referral
+    if (screeningOrReferral.has(encId)) {
+      encObs1 = 1;
+    }
+
+    // Obs 2: Assessment with Status (only if at-risk or referral)
+    if (!notAtRiskWithoutReferral.has(encId) &&
+        atRiskOrReferral.has(encId) &&
+        assessmentWithStatus.has(encId)) {
+      encObs2 = 1;
+    }
+
+    // Obs 3: Diagnosis (only if at-risk/referral AND moderate/severe)
+    if (!notAtRiskWithoutReferral.has(encId) &&
+        atRiskOrReferral.has(encId) &&
+        modSevereAssessment.has(encId) &&
+        diagnosis.has(encId)) {
+      encObs3 = 1;
+    }
+
+    // Obs 4: Care Plan (only if at-risk/referral AND moderate/severe)
+    if (!notAtRiskWithoutReferral.has(encId) &&
+        atRiskOrReferral.has(encId) &&
+        modSevereAssessment.has(encId) &&
+        carePlan.has(encId)) {
+      encObs4 = 1;
+    }
+
+    // This encounter's total score (0-4)
+    const encScore = encObs1 + encObs2 + encObs3 + encObs4;
+    totalComponentsScore += encScore;
+
+    // Calculate this encounter's eligible occurrences based on CQL logic
+    let encEligible: number;
+    if (screeningOrReferral.has(encId) && notAtRiskWithoutReferral.has(encId)) {
+      encEligible = 1;  // Not at risk without referral
+    } else if (atRiskOrReferral.has(encId) &&
+               (notMildAssessment.has(encId) || !assessmentWithStatus.has(encId))) {
+      encEligible = 2;  // At risk but not/mildly malnourished or no assessment
+    } else if (screeningOrReferral.has(encId)) {
+      encEligible = 4;  // Full pathway (at risk + mod/severe)
+    } else {
+      encEligible = 2;  // Default
+    }
+
+    // This encounter's percentage
+    const encPercentage = encEligible > 0 ? (encScore / encEligible) * 100 : 0;
+    totalPercentageSum += encPercentage;
+  }
+
+  // Groups 5 and 6: Per-encounter values
+  // obs1-4 represent per-encounter scores (not per-observation-type totals)
+  // Use sorted encounter order to match MeasureReport ordering
+  const encounterScores: number[] = [];      // Group 5: total score per encounter (0-4)
+  const encounterPercentages: number[] = []; // Group 6: percentage per encounter
+
+  for (const encId of sortedEncounterIds) {
+    let encObs1 = screeningOrReferral.has(encId) ? 1 : 0;
+    let encObs2 = (!notAtRiskWithoutReferral.has(encId) && atRiskOrReferral.has(encId) && assessmentWithStatus.has(encId)) ? 1 : 0;
+    let encObs3 = (!notAtRiskWithoutReferral.has(encId) && atRiskOrReferral.has(encId) && modSevereAssessment.has(encId) && diagnosis.has(encId)) ? 1 : 0;
+    let encObs4 = (!notAtRiskWithoutReferral.has(encId) && atRiskOrReferral.has(encId) && modSevereAssessment.has(encId) && carePlan.has(encId)) ? 1 : 0;
+
+    const encScore = encObs1 + encObs2 + encObs3 + encObs4;
+    encounterScores.push(encScore);
+
+    let encEligible: number;
+    if (screeningOrReferral.has(encId) && notAtRiskWithoutReferral.has(encId)) {
+      encEligible = 1;
+    } else if (atRiskOrReferral.has(encId) && (notMildAssessment.has(encId) || !assessmentWithStatus.has(encId))) {
+      encEligible = 2;
+    } else if (screeningOrReferral.has(encId)) {
+      encEligible = 4;
+    } else {
+      encEligible = 2;
+    }
+    const encPct = encEligible > 0 ? Math.round((encScore / encEligible) * 100) : 0;
+    encounterPercentages.push(encPct);
+  }
+
+  // Group 5: Total Malnutrition Components Score (per-encounter totals)
+  groups.push({
+    groupId: 'Group_5',
+    populations: {
+      initialPopulation: ipCount,
+      measurePopulation: mpCount,
+      measurePopulationExclusion: mpeCount,
+      observations: {
+        obs1: encounterScores[0] || 0,
+        obs2: encounterScores[1] || 0,
+        obs3: encounterScores[2] || 0,
+        obs4: encounterScores[3] || 0
+      }
+    },
+    measureScore: mpCount > 0 ? totalComponentsScore / mpCount : 0
+  });
+
+  // Group 6: Total Malnutrition Care Score as Percentage (per-encounter percentages)
+  groups.push({
+    groupId: 'Group_6',
+    populations: {
+      initialPopulation: ipCount,
+      measurePopulation: mpCount,
+      measurePopulationExclusion: mpeCount,
+      observations: {
+        obs1: encounterPercentages[0] || 0,
+        obs2: encounterPercentages[1] || 0,
+        obs3: encounterPercentages[2] || 0,
+        obs4: encounterPercentages[3] || 0
+      }
+    },
+    measureScore: mpCount > 0 ? totalPercentageSum / (mpCount * 100) : 0
+  });
+
+  return groups;
+}
+
+/**
+ * Compare expected and actual groups
+ */
+function compareGroups(expected: ExpectedGroup[], actual: ActualGroup[]): GroupComparison[] {
+  const comparisons: GroupComparison[] = [];
+
+  for (let i = 0; i < Math.max(expected.length, actual.length); i++) {
+    const exp = expected[i];
+    const act = actual[i];
+
+    if (!exp || !act) continue;
+
+    // Compare population counts
+    const popMatch =
+      exp.populations.initialPopulation === act.populations.initialPopulation &&
+      exp.populations.measurePopulation === act.populations.measurePopulation &&
+      exp.populations.measurePopulationExclusion === act.populations.measurePopulationExclusion;
+
+    // For Groups 1-4: compare obs1 directly (single observation per group)
+    // For Groups 5-6: compare sorted observation sets (encounter order doesn't matter)
+    let obsMatch: boolean;
+    if (exp.groupId === 'Group_5' || exp.groupId === 'Group_6') {
+      // Sort both expected and actual observation values for comparison
+      // This handles the case where encounters are in different order
+      const expObs = [
+        exp.populations.observations.obs1,
+        exp.populations.observations.obs2,
+        exp.populations.observations.obs3,
+        exp.populations.observations.obs4
+      ].filter(v => v !== 0).sort((a, b) => b - a);  // Non-zero values, descending
+
+      const actObs = [
+        act.populations.observations.obs1,
+        act.populations.observations.obs2,
+        act.populations.observations.obs3,
+        act.populations.observations.obs4
+      ].filter(v => v !== 0).sort((a, b) => b - a);  // Non-zero values, descending
+
+      obsMatch = expObs.length === actObs.length &&
+                 expObs.every((v, idx) => v === actObs[idx]);
+    } else {
+      // Groups 1-4: direct comparison of obs1
+      obsMatch = exp.populations.observations.obs1 === act.populations.observations.obs1;
+    }
+
+    const passed = popMatch && obsMatch;
+
+    comparisons.push({
+      groupId: exp.groupId,
+      expected: exp.populations,
+      actual: act.populations,
+      expectedScore: exp.measureScore,
+      actualScore: act.measureScore,
+      passed
+    });
+  }
+
+  return comparisons;
+}
 
 // Default directories
 const DEFAULT_PATIENTS_DIR = './patients';
@@ -472,6 +898,8 @@ program
         passed: boolean;
         actualCount: number;
         expectedCount: number;
+        groupComparisons?: GroupComparison[];
+        observations?: { obs1: number; obs2: number; obs3: number; obs4: number };
         error?: string;
         expressions?: Record<string, unknown>;
       }> = [];
@@ -498,9 +926,18 @@ program
           const startStr = testCase.expectedResults.measurementPeriod.start;
           const endStr = testCase.expectedResults.measurementPeriod.end;
 
-          // Create executor - pass null for parameters to use CQL defaults
-          // The CQL has a default Measurement Period defined
-          const executor = new Executor(mainLibrary, codeService, undefined);
+          // Parse measurement period dates into CQL DateTime objects
+          const startDate = new Date(startStr);
+          const endDate = new Date(endStr);
+
+          const mpStart = DateTime.fromJSDate(startDate, 0); // 0 = UTC offset
+          const mpEnd = DateTime.fromJSDate(endDate, 0);
+          const measurementPeriod = new Interval(mpStart, mpEnd, true, true);
+
+          // Create executor with Measurement Period parameter
+          const executor = new Executor(mainLibrary, codeService, {
+            'Measurement Period': measurementPeriod
+          });
 
           // Execute
           const execResults = await executor.exec(patientSource);
@@ -524,14 +961,24 @@ program
           );
           const expectedCount = expectedPop?.count ?? 0;
 
-          const passed = actualCount === expectedCount;
+          // Calculate observations and group comparisons
+          const observations = calculateObservations(patientResults);
+          const actualGroups = calculateActualGroups(patientResults);
+          const groupComparisons = compareGroups(testCase.expectedResults.groups, actualGroups);
+
+          // Check if all groups pass
+          const allGroupsPass = groupComparisons.every(g => g.passed);
+          const ipPassed = actualCount === expectedCount;
+          const passed = ipPassed && allGroupsPass;
 
           // Build result object
           const resultObj: typeof results[0] = {
             testCase,
             passed,
             actualCount,
-            expectedCount
+            expectedCount,
+            groupComparisons,
+            observations
           };
 
           // Include full expressions if --full is specified
@@ -547,6 +994,32 @@ program
 
           if (!passed || options.verbose) {
             console.log(chalk.gray(`  Initial Population: expected ${expectedCount}, got ${actualCount}`));
+
+            // Show observation scores
+            console.log(chalk.gray(`  Observations: Obs1=${observations.obs1}, Obs2=${observations.obs2}, Obs3=${observations.obs3}, Obs4=${observations.obs4}`));
+
+            // Show group comparison details for failures
+            if (!allGroupsPass) {
+              console.log(chalk.gray('  Group Comparisons:'));
+              for (const gc of groupComparisons) {
+                const groupStatus = gc.passed ? chalk.green('OK') : chalk.red('FAIL');
+                if (!gc.passed || options.verbose) {
+                  console.log(chalk.gray(`    ${gc.groupId}: [${groupStatus}]`));
+                  console.log(chalk.gray(`      IP: exp=${gc.expected.initialPopulation}, act=${gc.actual.initialPopulation}`));
+                  console.log(chalk.gray(`      MP: exp=${gc.expected.measurePopulation}, act=${gc.actual.measurePopulation}`));
+                  console.log(chalk.gray(`      MPE: exp=${gc.expected.measurePopulationExclusion}, act=${gc.actual.measurePopulationExclusion}`));
+                  // Show individual observations
+                  const expObs = gc.expected.observations;
+                  const actObs = gc.actual.observations;
+                  console.log(chalk.gray(`      Obs1: exp=${expObs.obs1}, act=${actObs.obs1}`));
+                  if (gc.groupId === 'Group_5' || gc.groupId === 'Group_6') {
+                    console.log(chalk.gray(`      Obs2: exp=${expObs.obs2}, act=${actObs.obs2}`));
+                    console.log(chalk.gray(`      Obs3: exp=${expObs.obs3}, act=${actObs.obs3}`));
+                    console.log(chalk.gray(`      Obs4: exp=${expObs.obs4}, act=${actObs.obs4}`));
+                  }
+                }
+              }
+            }
           }
 
           if (options.verbose && Object.keys(patientResults).length > 0) {
@@ -584,21 +1057,58 @@ program
 
       console.log(chalk.gray('\n' + '━'.repeat(50)));
 
-      // Build results object
+      // Build results object with unique titles
+      // Track occurrence count per test name for unique titles
+      const nameCounts: Record<string, number> = {};
+      const nameIndices: Record<string, number> = {};
+
+      // First pass: count total occurrences of each name
+      for (const r of results) {
+        nameCounts[r.testCase.name] = (nameCounts[r.testCase.name] || 0) + 1;
+      }
+
       const outputData = {
         package: mainLibraryName,
         timestamp: new Date().toISOString(),
         total: results.length,
         passed: passedCount,
         failed: failedCount,
+        groupNames: GROUP_NAMES,
+        observationNames: OBSERVATION_NAMES,
         results: results.map(r => {
+          // Generate unique title: name_N if multiple, or just name if single
+          const count = nameCounts[r.testCase.name];
+          let title: string;
+          if (count > 1) {
+            nameIndices[r.testCase.name] = (nameIndices[r.testCase.name] || 0) + 1;
+            title = `${r.testCase.name}_${nameIndices[r.testCase.name]}`;
+          } else {
+            title = r.testCase.name;
+          }
+
           const result: Record<string, unknown> = {
             id: r.testCase.id,
             name: r.testCase.name,
+            title: title,
+            description: r.testCase.expectedResults.description || '',
             passed: r.passed,
             expected: r.expectedCount,
             actual: r.actualCount
           };
+          if (r.observations) {
+            result.observations = r.observations;
+          }
+          if (r.groupComparisons) {
+            result.groups = r.groupComparisons.map(gc => ({
+              groupId: gc.groupId,
+              groupName: GROUP_NAMES[gc.groupId] || gc.groupId,
+              passed: gc.passed,
+              expected: gc.expected,
+              actual: gc.actual,
+              expectedScore: gc.expectedScore,
+              actualScore: gc.actualScore
+            }));
+          }
           if (r.error) result.error = r.error;
           if (r.expressions) result.expressions = r.expressions;
           return result;

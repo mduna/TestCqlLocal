@@ -28,6 +28,37 @@ interface FHIRBundle {
 }
 
 /**
+ * Individual observation values within a group
+ * For Groups 1-4: only obs1 is used (the single observation for that group)
+ * For Group 5-6: obs1-obs4 represent the individual observation totals
+ */
+export interface ObservationValues {
+  obs1: number;
+  obs2: number;
+  obs3: number;
+  obs4: number;
+}
+
+/**
+ * Population counts within a group
+ */
+export interface PopulationCounts {
+  initialPopulation: number;
+  measurePopulation: number;
+  measurePopulationExclusion: number;
+  observations: ObservationValues;  // Individual observation values
+}
+
+/**
+ * Group-level expected results
+ */
+export interface ExpectedGroup {
+  groupId: string;
+  populations: PopulationCounts;
+  measureScore: number;
+}
+
+/**
  * Expected results extracted from MeasureReport
  */
 export interface ExpectedResults {
@@ -40,6 +71,7 @@ export interface ExpectedResults {
     code: string;
     count: number;
   }>;
+  groups: ExpectedGroup[];
   measureScore?: number;
   description?: string;
 }
@@ -159,10 +191,15 @@ export function extractExpectedResults(bundle: FHIRBundle): ExpectedResults {
     end: measureReport.period?.end || '2025-01-31'
   };
 
-  // Extract populations from groups
+  // Extract populations from groups (legacy flat format)
   const populations: Array<{ code: string; count: number }> = [];
+
+  // Extract groups with structured population counts
+  const groups: ExpectedGroup[] = [];
+
   if (measureReport.group) {
     for (const group of measureReport.group) {
+      // Legacy flat populations
       if (group.population) {
         for (const pop of group.population) {
           const code = pop.code?.coding?.[0]?.code;
@@ -172,10 +209,72 @@ export function extractExpectedResults(bundle: FHIRBundle): ExpectedResults {
           }
         }
       }
+
+      // Structured group extraction
+      const groupId = group.id || `Group_${groups.length + 1}`;
+      const groupPops: PopulationCounts = {
+        initialPopulation: 0,
+        measurePopulation: 0,
+        measurePopulationExclusion: 0,
+        observations: { obs1: 0, obs2: 0, obs3: 0, obs4: 0 }
+      };
+
+      if (group.population) {
+        for (const pop of group.population) {
+          const code = pop.code?.coding?.[0]?.code;
+          const count = pop.count ?? 0;
+          const popId = pop.id || '';
+
+          switch (code) {
+            case 'initial-population':
+              groupPops.initialPopulation = count;
+              break;
+            case 'measure-population':
+              groupPops.measurePopulation = count;
+              break;
+            case 'measure-population-exclusion':
+              groupPops.measurePopulationExclusion = count;
+              break;
+            case 'measure-population-observation':
+            case 'measure-observation':
+              // Parse observation index from id: "MeasureObservation_N_X" where X is 1-4
+              // For Groups 1-4: id is like "MeasureObservation_1_1", "MeasureObservation_1_2" (encounter-level)
+              // For Groups 5-6: id is like "MeasureObservation_5_1" (obs1), "MeasureObservation_5_2" (obs2)
+              const obsMatch = popId.match(/MeasureObservation_\d+_(\d+)/);
+              if (obsMatch) {
+                const obsIndex = parseInt(obsMatch[1], 10);
+                // For Groups 1-4, all observations go to obs1 (sum of per-encounter values)
+                // For Groups 5-6, observations map to obs1-4
+                if (groupId === 'Group_5' || groupId === 'Group_6') {
+                  // Direct mapping: MeasureObservation_5_1 -> obs1, _5_2 -> obs2, etc.
+                  switch (obsIndex) {
+                    case 1: groupPops.observations.obs1 = count; break;
+                    case 2: groupPops.observations.obs2 = count; break;
+                    case 3: groupPops.observations.obs3 = count; break;
+                    case 4: groupPops.observations.obs4 = count; break;
+                  }
+                } else {
+                  // Groups 1-4: sum all observations into obs1
+                  groupPops.observations.obs1 += count;
+                }
+              } else {
+                // Fallback: sum into obs1
+                groupPops.observations.obs1 += count;
+              }
+              break;
+          }
+        }
+      }
+
+      groups.push({
+        groupId,
+        populations: groupPops,
+        measureScore: group.measureScore?.value ?? 0
+      });
     }
   }
 
-  // Extract measure score
+  // Extract measure score (first group)
   let measureScore: number | undefined;
   if (measureReport.group?.[0]?.measureScore?.value !== undefined) {
     measureScore = measureReport.group[0].measureScore.value;
@@ -196,6 +295,7 @@ export function extractExpectedResults(bundle: FHIRBundle): ExpectedResults {
     patientId,
     measurementPeriod,
     populations,
+    groups,
     measureScore,
     description
   };
