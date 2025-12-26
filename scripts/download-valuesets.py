@@ -37,9 +37,7 @@ def load_env_file():
 
 load_env_file()
 
-# Add parent directory to path to import vsac_client
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+# Import from same directory
 from vsac_client import (
     VSACClient,
     extract_valuesets_from_cql,
