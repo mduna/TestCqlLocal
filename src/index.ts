@@ -869,15 +869,11 @@ program
           const fileName = `${safeTestName}-bundle.json`;
           const filePath = path.join(bundlesDir, fileName);
 
-          // Save the processed collection bundle
+          // Save clean FHIR collection bundle (no custom metadata)
           const bundleToSave = {
             resourceType: 'Bundle',
             type: 'collection',
             id: testCase.id,
-            meta: {
-              testName: testCase.name,
-              expectedResults: testCase.expectedResults
-            },
             entry: testCase.patientBundle.entry
           };
           fs.writeFileSync(filePath, JSON.stringify(bundleToSave, null, 2));
