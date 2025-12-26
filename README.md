@@ -240,10 +240,12 @@ npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
 | Option | Content | Use Case |
 |--------|---------|----------|
 | `--save-elm` | Extracted ELM JSON (decoded from base64) | Debug CQL logic, share with others |
-| `--save-bundles` | Processed patient bundles (collection type) | Debug patient data, verify transformations |
+| `--save-bundles` | Clean FHIR collection bundles (MeasureReport removed) | Share with others for independent measure execution |
 | `--output` | Test results with pass/fail | Track test history, CI/CD integration |
 
 **Note:** All saved files will be overwritten if they already exist. Use unique filenames or directories to preserve previous outputs.
+
+**Bundle Format Support:** Test case bundles can be in either **transaction** or **collection** format. The tool automatically handles both formats.
 
 ## How It Works
 
@@ -259,7 +261,7 @@ npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
 
 4. **Process Test Cases**:
    - Reads test bundles from UUID-named folders
-   - Converts transaction bundles to collection bundles
+   - Handles both transaction and collection bundle formats
    - Extracts expected results from MeasureReport
 
 5. **Execute CQL**: Runs against each patient and compares Initial Population count
@@ -289,7 +291,7 @@ CLI Command: npx tsx src/index.ts madie <package> --test-cases <dir>
 │ 3. Process Test Cases (src/madie/test-bundle-processor.ts)  │
 │    ├── Read README.txt for UUID → test name mapping         │
 │    ├── Load test bundle from each UUID folder               │
-│    ├── Convert transaction bundle → collection bundle       │
+│    ├── Handle transaction or collection bundle format       │
 │    └── Extract expected results from MeasureReport          │
 └─────────────────────────────────────────────────────────────┘
     │
