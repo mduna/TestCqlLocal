@@ -344,10 +344,10 @@ TestCqlLocal/
 │   ├── madie/                   # MADiE package handling
 │   └── terminology/             # ValueSet/CodeService
 ├── scripts/
-│   └── download-valuesets.py    # VSAC download script
+│   ├── download-valuesets.py    # VSAC download script
+│   ├── vsac_client.py           # VSAC API client
+│   └── code_systems.py          # Code system definitions
 ├── valuesets/nhsn/              # Downloaded ValueSets (8 files)
-├── vsac_client.py               # VSAC API client
-├── code_systems.py              # Code system definitions
 ├── NHSNACHMonthly1-v0.0.000-FHIR/           # MADiE package
 │   ├── resources/               # FHIR Library resources
 │   └── cql/                     # CQL source files
