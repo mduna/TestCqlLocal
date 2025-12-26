@@ -243,6 +243,14 @@ npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
 | `--save-bundles` | Clean FHIR collection bundles (MeasureReport removed) | Share with others for independent measure execution |
 | `--output` | Test results with pass/fail | Track test history, CI/CD integration |
 
+**Bundle Naming:** Saved bundles use the original test case filename which contains the package, group, and unique test case name:
+```
+{Package}-{Group}-{TestCaseName}-bundle.json
+```
+Examples:
+- `CMS986FHIR-v1.0.000-MSROBSPass4-2EncountersScreAtRiskThenRef-bundle.json`
+- `NHSNACHMonthly1-v0.0.000-AROptionAR1_HospitalOnsetMRSA-bundle.json`
+
 **Note:** All saved files will be overwritten if they already exist. Use unique filenames or directories to preserve previous outputs.
 
 **Bundle Format Support:** Test case bundles can be in either **transaction** or **collection** format. The tool automatically handles both formats.
