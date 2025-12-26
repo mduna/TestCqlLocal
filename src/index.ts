@@ -25,6 +25,7 @@ import {
   loadMADiEPackage,
   createRepository,
   listPackageLibraries,
+  MeasureMetadata,
 } from './madie/package-loader.js';
 import {
   loadTestCases,
@@ -44,26 +45,27 @@ import { Library, Executor, DateTime, Interval } from 'cql-execution';
 const program = new Command();
 
 /**
- * Human-readable group names for CMS986 measure
+ * Build group names from measure metadata
  */
-const GROUP_NAMES: Record<string, string> = {
-  'Group_1': 'Malnutrition Risk Screening or Dietitian Referral',
-  'Group_2': 'Nutrition Assessment with Identified Status',
-  'Group_3': 'Malnutrition Diagnosis',
-  'Group_4': 'Nutrition Care Plan',
-  'Group_5': 'Total Malnutrition Components Score',
-  'Group_6': 'Total Malnutrition Care Score as Percentage'
-};
+function buildGroupNames(metadata: MeasureMetadata | null): Record<string, string> {
+  const names: Record<string, string> = {};
+  if (metadata?.groups) {
+    for (const group of metadata.groups) {
+      names[group.id] = group.description || group.id;
+    }
+  }
+  return names;
+}
 
 /**
- * Human-readable observation names
+ * Check if measure has multiple groups with observations
  */
-const OBSERVATION_NAMES: Record<string, string> = {
-  'obs1': 'Malnutrition Risk Screening or Dietitian Referral',
-  'obs2': 'Nutrition Assessment with Identified Status',
-  'obs3': 'Malnutrition Diagnosis',
-  'obs4': 'Nutrition Care Plan'
-};
+function hasMultipleGroupsWithObservations(metadata: MeasureMetadata | null): boolean {
+  if (!metadata || metadata.groupCount <= 1) {
+    return false;
+  }
+  return metadata.groups.some(g => g.hasObservations);
+}
 
 /**
  * Actual group results calculated from CQL execution
@@ -889,6 +891,9 @@ program
       const repository = createRepository(pkg);
       const mainLibrary = new Library(pkg.mainLibrary, repository);
 
+      // Check if this is a multi-group measure (for output formatting)
+      const isMultiGroupMeasure = hasMultipleGroupsWithObservations(pkg.measureMetadata);
+
       // Run each test case
       const results: Array<{
         testCase: TestCase;
@@ -992,27 +997,29 @@ program
           if (!passed || options.verbose) {
             console.log(chalk.gray(`  Initial Population: expected ${expectedCount}, got ${actualCount}`));
 
-            // Show observation scores
-            console.log(chalk.gray(`  Observations: Obs1=${observations.obs1}, Obs2=${observations.obs2}, Obs3=${observations.obs3}, Obs4=${observations.obs4}`));
+            // Only show observation scores and group comparisons for multi-group measures
+            if (isMultiGroupMeasure) {
+              console.log(chalk.gray(`  Observations: Obs1=${observations.obs1}, Obs2=${observations.obs2}, Obs3=${observations.obs3}, Obs4=${observations.obs4}`));
 
-            // Show group comparison details for failures
-            if (!allGroupsPass) {
-              console.log(chalk.gray('  Group Comparisons:'));
-              for (const gc of groupComparisons) {
-                const groupStatus = gc.passed ? chalk.green('OK') : chalk.red('FAIL');
-                if (!gc.passed || options.verbose) {
-                  console.log(chalk.gray(`    ${gc.groupId}: [${groupStatus}]`));
-                  console.log(chalk.gray(`      IP: exp=${gc.expected.initialPopulation}, act=${gc.actual.initialPopulation}`));
-                  console.log(chalk.gray(`      MP: exp=${gc.expected.measurePopulation}, act=${gc.actual.measurePopulation}`));
-                  console.log(chalk.gray(`      MPE: exp=${gc.expected.measurePopulationExclusion}, act=${gc.actual.measurePopulationExclusion}`));
-                  // Show individual observations
-                  const expObs = gc.expected.observations;
-                  const actObs = gc.actual.observations;
-                  console.log(chalk.gray(`      Obs1: exp=${expObs.obs1}, act=${actObs.obs1}`));
-                  if (gc.groupId === 'Group_5' || gc.groupId === 'Group_6') {
-                    console.log(chalk.gray(`      Obs2: exp=${expObs.obs2}, act=${actObs.obs2}`));
-                    console.log(chalk.gray(`      Obs3: exp=${expObs.obs3}, act=${actObs.obs3}`));
-                    console.log(chalk.gray(`      Obs4: exp=${expObs.obs4}, act=${actObs.obs4}`));
+              // Show group comparison details for failures
+              if (!allGroupsPass) {
+                console.log(chalk.gray('  Group Comparisons:'));
+                for (const gc of groupComparisons) {
+                  const groupStatus = gc.passed ? chalk.green('OK') : chalk.red('FAIL');
+                  if (!gc.passed || options.verbose) {
+                    console.log(chalk.gray(`    ${gc.groupId}: [${groupStatus}]`));
+                    console.log(chalk.gray(`      IP: exp=${gc.expected.initialPopulation}, act=${gc.actual.initialPopulation}`));
+                    console.log(chalk.gray(`      MP: exp=${gc.expected.measurePopulation}, act=${gc.actual.measurePopulation}`));
+                    console.log(chalk.gray(`      MPE: exp=${gc.expected.measurePopulationExclusion}, act=${gc.actual.measurePopulationExclusion}`));
+                    // Show individual observations
+                    const expObs = gc.expected.observations;
+                    const actObs = gc.actual.observations;
+                    console.log(chalk.gray(`      Obs1: exp=${expObs.obs1}, act=${actObs.obs1}`));
+                    if (gc.groupId === 'Group_5' || gc.groupId === 'Group_6') {
+                      console.log(chalk.gray(`      Obs2: exp=${expObs.obs2}, act=${actObs.obs2}`));
+                      console.log(chalk.gray(`      Obs3: exp=${expObs.obs3}, act=${actObs.obs3}`));
+                      console.log(chalk.gray(`      Obs4: exp=${expObs.obs4}, act=${actObs.obs4}`));
+                    }
                   }
                 }
               }
@@ -1064,53 +1071,69 @@ program
         nameCounts[r.testCase.name] = (nameCounts[r.testCase.name] || 0) + 1;
       }
 
-      const outputData = {
+      // Build dynamic group names from measure metadata
+      const dynamicGroupNames = buildGroupNames(pkg.measureMetadata);
+
+      const outputData: Record<string, unknown> = {
         package: mainLibraryName,
         timestamp: new Date().toISOString(),
         total: results.length,
         passed: passedCount,
-        failed: failedCount,
-        groupNames: GROUP_NAMES,
-        observationNames: OBSERVATION_NAMES,
-        results: results.map(r => {
-          // Generate unique title: name_N if multiple, or just name if single
-          const count = nameCounts[r.testCase.name];
-          let title: string;
-          if (count > 1) {
-            nameIndices[r.testCase.name] = (nameIndices[r.testCase.name] || 0) + 1;
-            title = `${r.testCase.name}_${nameIndices[r.testCase.name]}`;
-          } else {
-            title = r.testCase.name;
-          }
+        failed: failedCount
+      };
 
-          const result: Record<string, unknown> = {
-            id: r.testCase.id,
-            name: r.testCase.name,
-            title: title,
-            description: r.testCase.expectedResults.description || '',
-            passed: r.passed,
-            expected: r.expectedCount,
-            actual: r.actualCount
-          };
+      // Only include groupNames for multi-group measures
+      if (isMultiGroupMeasure && Object.keys(dynamicGroupNames).length > 0) {
+        outputData.groupNames = dynamicGroupNames;
+      }
+
+      outputData.results = results.map(r => {
+        // Generate unique title: name_N if multiple, or just name if single
+        const count = nameCounts[r.testCase.name];
+        let title: string;
+        if (count > 1) {
+          nameIndices[r.testCase.name] = (nameIndices[r.testCase.name] || 0) + 1;
+          title = `${r.testCase.name}_${nameIndices[r.testCase.name]}`;
+        } else {
+          title = r.testCase.name;
+        }
+
+        const result: Record<string, unknown> = {
+          id: r.testCase.id,
+          name: r.testCase.name,
+          title: title,
+          description: r.testCase.expectedResults.description || '',
+          passed: r.passed
+        };
+
+        // For single-group measures, use descriptive format
+        if (!isMultiGroupMeasure) {
+          result.expected = { initialPopulation: r.expectedCount };
+          result.actual = { initialPopulation: r.actualCount };
+        } else {
+          // For multi-group measures, keep simple counts at top level
+          result.expected = r.expectedCount;
+          result.actual = r.actualCount;
           if (r.observations) {
             result.observations = r.observations;
           }
-          if (r.groupComparisons) {
-            result.groups = r.groupComparisons.map(gc => ({
-              groupId: gc.groupId,
-              groupName: GROUP_NAMES[gc.groupId] || gc.groupId,
-              passed: gc.passed,
-              expected: gc.expected,
-              actual: gc.actual,
-              expectedScore: gc.expectedScore,
-              actualScore: gc.actualScore
-            }));
-          }
-          if (r.error) result.error = r.error;
-          if (r.expressions) result.expressions = r.expressions;
-          return result;
-        })
-      };
+        }
+        // Only include groups for multi-group measures
+        if (isMultiGroupMeasure && r.groupComparisons) {
+          result.groups = r.groupComparisons.map(gc => ({
+            groupId: gc.groupId,
+            groupName: dynamicGroupNames[gc.groupId] || gc.groupId,
+            passed: gc.passed,
+            expected: gc.expected,
+            actual: gc.actual,
+            expectedScore: gc.expectedScore,
+            actualScore: gc.actualScore
+          }));
+        }
+        if (r.error) result.error = r.error;
+        if (r.expressions) result.expressions = r.expressions;
+        return result;
+      });
 
       // Save to file if --output specified
       if (options.output) {

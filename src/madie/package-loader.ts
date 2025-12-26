@@ -12,6 +12,25 @@ import { ELMLibrary } from '../engine/cql-runner.js';
 import { extractELMFromFHIRLibrary, getLibraryInfo } from './elm-extractor.js';
 
 /**
+ * Group metadata from Measure resource
+ */
+export interface MeasureGroup {
+  id: string;
+  description: string | null;
+  hasObservations: boolean;
+}
+
+/**
+ * Measure metadata
+ */
+export interface MeasureMetadata {
+  name: string;
+  version: string;
+  groups: MeasureGroup[];
+  groupCount: number;
+}
+
+/**
  * MADiE package structure
  */
 export interface MADiEPackage {
@@ -19,6 +38,7 @@ export interface MADiEPackage {
   dependentLibraries: ELMLibrary[];
   allLibraries: ELMLibrary[];
   valueSetUrls: string[];
+  measureMetadata: MeasureMetadata | null;
 }
 
 /**
@@ -107,12 +127,74 @@ export function loadMADiEPackage(packageDir: string, mainLibraryName: string): M
   // Extract ValueSet URLs from the main library
   const valueSetUrls = extractValueSetUrls(mainLibrary);
 
+  // Load Measure metadata for group names
+  const measureMetadata = loadMeasureMetadata(resourcesDir);
+
   return {
     mainLibrary,
     dependentLibraries,
     allLibraries,
-    valueSetUrls
+    valueSetUrls,
+    measureMetadata
   };
+}
+
+/**
+ * Load Measure resource and extract group metadata.
+ *
+ * @param resourcesDir - Path to the resources directory
+ * @returns Measure metadata or null if not found
+ */
+function loadMeasureMetadata(resourcesDir: string): MeasureMetadata | null {
+  // Find measure file
+  const files = fs.readdirSync(resourcesDir).filter(f =>
+    f.startsWith('measure-') && f.endsWith('.json')
+  );
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  try {
+    const measurePath = path.join(resourcesDir, files[0]);
+    const content = fs.readFileSync(measurePath, 'utf-8');
+    const measure = JSON.parse(content);
+
+    if (measure.resourceType !== 'Measure') {
+      return null;
+    }
+
+    const groups: MeasureGroup[] = [];
+
+    if (Array.isArray(measure.group)) {
+      for (const group of measure.group) {
+        // Check if group has observations by looking at population types
+        let hasObservations = false;
+        if (Array.isArray(group.population)) {
+          hasObservations = group.population.some((pop: any) => {
+            const code = pop.code?.coding?.[0]?.code;
+            return code === 'measure-observation' || code === 'measure-population-observation';
+          });
+        }
+
+        groups.push({
+          id: group.id || `Group_${groups.length + 1}`,
+          description: group.description?.trim() || null,
+          hasObservations
+        });
+      }
+    }
+
+    return {
+      name: measure.name || measure.title || 'Unknown',
+      version: measure.version || '0.0.0',
+      groups,
+      groupCount: groups.length
+    };
+  } catch (err) {
+    console.warn('Warning: Could not load Measure metadata:', err);
+    return null;
+  }
 }
 
 /**
