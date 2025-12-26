@@ -81,7 +81,8 @@ export interface ExpectedResults {
  */
 export interface TestCase {
   id: string;           // UUID folder name
-  name: string;         // Human-readable name from README.txt
+  name: string;         // Human-readable name from README.txt (group name)
+  fileName: string;     // Original file name (contains group + unique test case name)
   patientBundle: FHIRBundle;
   expectedResults: ExpectedResults;
 }
@@ -320,7 +321,8 @@ export function loadTestCase(testCaseDir: string, testName: string): TestCase {
     throw new Error(`No JSON file found in ${testCaseDir}`);
   }
 
-  const bundlePath = path.join(testCaseDir, files[0]);
+  const originalFileName = files[0];
+  const bundlePath = path.join(testCaseDir, originalFileName);
   const content = fs.readFileSync(bundlePath, 'utf-8');
   const bundle: FHIRBundle = JSON.parse(content);
 
@@ -330,9 +332,15 @@ export function loadTestCase(testCaseDir: string, testName: string): TestCase {
   // Convert to collection bundle (removes MeasureReport)
   const patientBundle = convertToCollectionBundle(bundle);
 
+  // Extract unique test case name from filename
+  // Format: {Package}-{Group}-{TestCaseName}.json
+  // e.g., CMS986FHIR-v1.0.000-MSROBSPass4-2EncountersScreAtRiskThenRef.json
+  const fileNameWithoutExt = originalFileName.replace('.json', '');
+
   return {
     id: uuid,
     name: testName,
+    fileName: fileNameWithoutExt,
     patientBundle,
     expectedResults
   };

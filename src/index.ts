@@ -864,9 +864,10 @@ program
           fs.mkdirSync(bundlesDir, { recursive: true });
         }
         for (const testCase of testCases) {
-          // Create a clean filename from test name
-          const safeTestName = testCase.name.replace(/[^a-zA-Z0-9]/g, '-');
-          const fileName = `${safeTestName}-bundle.json`;
+          // Use original filename which contains unique group + test case name
+          // e.g., CMS986FHIR-v1.0.000-MSROBSPass4-2EncountersScreAtRiskThenRef
+          const safeFileName = testCase.fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
+          const fileName = `${safeFileName}-bundle.json`;
           const filePath = path.join(bundlesDir, fileName);
 
           // Save clean FHIR collection bundle (no custom metadata)
