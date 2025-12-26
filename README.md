@@ -36,7 +36,7 @@ python scripts/download-valuesets.py --api-key "YOUR_BASE64_KEY" --package NHSNA
 
 ### 2. Run Test Cases
 
-Run all 30 test cases:
+Run all test cases:
 ```bash
 npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
   --test-cases NHSNACHMonthly1-v0.0.000-FHIR-TestCases
@@ -46,7 +46,7 @@ Run a specific test:
 ```bash
 npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
   --test-cases NHSNACHMonthly1-v0.0.000-FHIR-TestCases \
-  --test HOBPositiveDay4SAureus
+  --test AROptionAR1_HospitalOnsetMRSA
 ```
 
 ### Expected Output
@@ -57,14 +57,12 @@ MADiE Package Test Runner
 Package: NHSNAcuteCareHospitalMonthlyInitialPopulation1
 Libraries: 5
 
-[PASS] HOBPositiveDay4SAureus
-  Initial Population: expected 1, got 1
-
-[PASS] OrganDysfunctionCardiovascularVasopressor
-  Initial Population: expected 1, got 1
+[PASS] AROptionAR1_HospitalOnsetMRSA
+[PASS] AROptionAR2_CommunityOnsetEcoliUTI
+...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Results: 30 passed, 0 failed
+Results: 17 passed, 0 failed
 ```
 
 ## MADiE Command Reference
@@ -95,18 +93,85 @@ npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
 # Run specific test with verbose output
 npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
   --test-cases NHSNACHMonthly1-v0.0.000-FHIR-TestCases \
-  --test HOBPositiveDay4SAureus --verbose
+  --test AROptionAR1_HospitalOnsetMRSA --verbose
 
 # Get JSON output with full SDE data
 npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
   --test-cases NHSNACHMonthly1-v0.0.000-FHIR-TestCases \
-  --test HOBPositiveDay4SAureus --json --full
+  --json --full
 
 # Save results to file
 npx tsx src/index.ts madie NHSNACHMonthly1-v0.0.000-FHIR \
   --test-cases NHSNACHMonthly1-v0.0.000-FHIR-TestCases \
-  --json > results.json
+  --output results/nhsn/run1.json
 ```
+
+### JSON Output Format
+
+The JSON output format adapts based on whether the measure has single or multiple groups:
+
+**Single-group measures** (like NHSN):
+```json
+{
+  "package": "NHSNAcuteCareHospitalMonthlyInitialPopulation1",
+  "total": 17,
+  "passed": 17,
+  "failed": 0,
+  "results": [
+    {
+      "name": "AROptionAR1_HospitalOnsetMRSA",
+      "title": "AROptionAR1_HospitalOnsetMRSA",
+      "description": "Hospital-onset MRSA bacteremia (day 5)",
+      "passed": true,
+      "expected": { "initialPopulation": 1 },
+      "actual": { "initialPopulation": 1 }
+    }
+  ]
+}
+```
+
+**Multi-group measures** (like CMS986):
+```json
+{
+  "package": "CMS986FHIRMalnutritionScore",
+  "total": 146,
+  "passed": 145,
+  "failed": 1,
+  "groupNames": {
+    "Group_1": "Population Criteria 1",
+    "Group_2": "Nutrition Assessment",
+    "Group_3": "Malnutrition Diagnosis",
+    "Group_4": "Nutrition Care Plan",
+    "Group_5": "Total Malnutrition Care Components",
+    "Group_6": "Encounter Malnutrition Care Score"
+  },
+  "results": [
+    {
+      "name": "MSROBSPass1",
+      "passed": true,
+      "expected": 4,
+      "actual": 4,
+      "observations": { "obs1": 1, "obs2": 1, "obs3": 1, "obs4": 1 },
+      "groups": [
+        {
+          "groupId": "Group_1",
+          "groupName": "Population Criteria 1",
+          "passed": true,
+          "expected": { "initialPopulation": 1, "measurePopulation": 1, ... },
+          "actual": { "initialPopulation": 1, "measurePopulation": 1, ... }
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Feature | Single-Group | Multi-Group |
+|---------|--------------|-------------|
+| `expected/actual` | `{ "initialPopulation": N }` | Simple count |
+| `groupNames` | Not included | Dynamically extracted from Measure |
+| `observations` | Not included | Per test case |
+| `groups` array | Not included | Detailed breakdown per group |
 
 ## Testing Multiple CQL Packages
 
@@ -217,8 +282,8 @@ TestCqlLocal/
 │       └── SharedResourceCreation-0.1.000.json
 ├── bundles-output/
 │   └── nhsn/
-│       ├── HOBPositiveDay4SAureus-bundle.json
-│       └── OrganDysfunctionCardiovascularVasopressor-bundle.json
+│       ├── NHSNACHMonthly1-v0.0.000-AROptionAR1_HospitalOnsetMRSA-bundle.json
+│       └── NHSNACHMonthly1-v0.0.000-AROptionAR2_CommunityOnsetEcoliUTI-bundle.json
 └── results/
     └── nhsn/
         └── 2025-01-15-run1.json
@@ -351,7 +416,7 @@ TestCqlLocal/
 ├── NHSNACHMonthly1-v0.0.000-FHIR/           # MADiE package
 │   ├── resources/               # FHIR Library resources
 │   └── cql/                     # CQL source files
-└── NHSNACHMonthly1-v0.0.000-FHIR-TestCases/ # 30 test cases
+└── NHSNACHMonthly1-v0.0.000-FHIR-TestCases/ # 17 test cases
     ├── README.txt               # UUID to test name mapping
     └── {uuid}/                  # Individual test bundles
 ```
