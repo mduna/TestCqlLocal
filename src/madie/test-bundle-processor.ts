@@ -116,28 +116,30 @@ export function parseReadmeMapping(readmePath: string): Map<string, string> {
 }
 
 /**
- * Convert a transaction bundle to a collection bundle.
- * Removes request objects and changes bundle type.
+ * Convert a bundle to a collection bundle for CQL execution.
+ * Handles both transaction and collection bundle types.
+ * Removes request objects (if present) and excludes MeasureReport.
  *
- * @param transactionBundle - The transaction bundle
- * @returns Collection bundle with only resources
+ * @param bundle - The input bundle (transaction or collection)
+ * @returns Collection bundle with only resources (excluding MeasureReport)
  */
-export function convertToCollectionBundle(transactionBundle: FHIRBundle): FHIRBundle {
+export function convertToCollectionBundle(bundle: FHIRBundle): FHIRBundle {
   const collectionBundle: FHIRBundle = {
     resourceType: 'Bundle',
-    id: transactionBundle.id,
+    id: bundle.id,
     type: 'collection',
     entry: []
   };
 
-  if (transactionBundle.entry) {
-    for (const entry of transactionBundle.entry) {
+  if (bundle.entry) {
+    for (const entry of bundle.entry) {
       if (entry.resource) {
         // Skip MeasureReport - we extract it separately
         if (entry.resource.resourceType === 'MeasureReport') {
           continue;
         }
 
+        // Add entry without request object (works for both transaction and collection)
         collectionBundle.entry!.push({
           fullUrl: entry.fullUrl,
           resource: entry.resource
